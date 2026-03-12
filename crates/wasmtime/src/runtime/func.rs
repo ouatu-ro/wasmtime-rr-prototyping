@@ -1353,14 +1353,17 @@ impl Func {
         debug_assert!(val_vec.is_empty());
         let nparams = ty.params().len();
         val_vec.reserve(nparams + ty.results().len());
+        let rr_core_active = caller.store.0.replay_enabled() || caller.store.0.engine().is_recording();
 
         let mut run_impl = |caller: &mut Caller<'_, T>, values_vec: &mut [ValRaw]| -> Result<()> {
-            let flat_params = ty.params().map(|x| x.to_wasm_type().byte_size());
-            rr::core_hooks::record_validate_host_func_entry(
-                values_vec,
-                flat_params,
-                &mut caller.store.0,
-            )?;
+            if rr_core_active {
+                let flat_params = ty.params().map(|x| x.to_wasm_type().byte_size());
+                rr::core_hooks::record_validate_host_func_entry(
+                    values_vec,
+                    flat_params,
+                    &mut caller.store.0,
+                )?;
+            }
             for (i, ty) in ty.params().enumerate() {
                 val_vec.push(unsafe { Val::from_raw(&mut caller.store, values_vec[i], ty) })
             }
@@ -1379,8 +1382,14 @@ impl Func {
                 values_vec[i] = ret.to_raw(&mut caller.store)?;
             }
 
-            let flat_results = ty.results().map(|x| x.to_wasm_type().byte_size());
-            rr::core_hooks::record_host_func_return(values_vec, flat_results, &mut caller.store.0)?;
+            if rr_core_active {
+                let flat_results = ty.results().map(|x| x.to_wasm_type().byte_size());
+                rr::core_hooks::record_host_func_return(
+                    values_vec,
+                    flat_results,
+                    &mut caller.store.0,
+                )?;
+            }
             Ok(())
         };
 
@@ -2572,12 +2581,15 @@ impl HostContext {
         R: WasmRet,
         T: 'static,
     {
+        let rr_core_active = caller.store.0.replay_enabled() || caller.store.0.engine().is_recording();
         // Don't need auto-assert GC store here since we aren't using P, just raw args for recording
-        rr::core_hooks::record_validate_host_func_entry(
-            unsafe { &args.as_ref()[..num_params] },
-            flat_size_params,
-            caller.store.0,
-        )?;
+        if rr_core_active {
+            rr::core_hooks::record_validate_host_func_entry(
+                unsafe { &args.as_ref()[..num_params] },
+                flat_size_params,
+                caller.store.0,
+            )?;
+        }
 
         let ret = 'ret: {
             if let Err(trap) = caller.store.0.call_hook(CallHook::CallingHost) {
@@ -2617,11 +2629,13 @@ impl HostContext {
             unsafe { ret.store(&mut store, args.as_mut())? };
         }
         // Record the return values
-        rr::core_hooks::record_host_func_return(
-            unsafe { &args.as_ref()[..num_results] },
-            flat_size_results,
-            caller.store.0,
-        )?;
+        if rr_core_active {
+            rr::core_hooks::record_host_func_return(
+                unsafe { &args.as_ref()[..num_results] },
+                flat_size_results,
+                caller.store.0,
+            )?;
+        }
         Ok(())
     }
 }
